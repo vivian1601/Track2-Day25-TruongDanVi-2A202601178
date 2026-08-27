@@ -52,7 +52,90 @@ def run(verbose: bool = True) -> dict:
         "best_region": min(sustainability.REGION_CARBON, key=sustainability.REGION_CARBON.get),
     }
 
-    md = report.build_report(baseline, optimized, levers, sustainability=sust)
+    reasoning = r2["reasoning"]
+    carbon = r3["carbon_aware"]
+    analysis_sections = [
+        "## Findings and prioritized actions",
+        "",
+        "1. **Move stable demand to reserved capacity and checkpoint interruptible jobs on spot.** "
+        f"This is the largest measured lever at ${levers['Purchasing (spot/reserved)']:,.0f}/month; "
+        "validate utilization before making a long commitment.",
+        "2. **Apply inference routing, prompt caching, and batching.** "
+        f"This saves ${levers['Inference (cascade/cache/batch)']:,.0f}/month and is a fast, low-risk "
+        "software change that does not require a capacity commitment.",
+        "3. **Profile and right-size the GPU-Util lies.** A high GPU-Util value only means the GPU clock "
+        "was active; memory stalls, weak tensor-core occupancy, and kernel-launch overhead can keep useful "
+        "FLOPs low. `gpu-h100-4` therefore bills as a full H100 while delivering about 20% MFU.",
+        "4. **Auto-stop idle instances.** This is a low-risk guardrail and removes "
+        f"${levers['Kill idle GPUs']:,.0f}/month from the current sample.",
+        "",
+        "## Extension: reasoning budget",
+        "",
+        f"Reasoning is {reasoning['traffic_pct']:.1f}% of requests but consumes "
+        f"{reasoning['cost_pct']:.1f}% of optimized inference cost and "
+        f"{reasoning['energy_pct']:.1f}% of estimated energy. Enforce a {reasoning['cap_pct']:.0f}% "
+        "traffic budget: reserve reasoning for evaluation or high-complexity tasks; route excess requests "
+        "to the small model after a cheap complexity check.",
+        f"On this dataset that reroutes {reasoning['rerouted_requests']} requests/day and is projected to "
+        f"save ${reasoning['projected_cost_savings_daily']:.2f}/day plus "
+        f"{reasoning['projected_energy_savings_wh_daily']:,.1f} Wh/day.",
+        "",
+        "| Traffic | Requests | Tokens | $/1M tokens | Wh/1M tokens |",
+        "|---|---:|---:|---:|---:|",
+        f"| Reasoning | {reasoning['reasoning_metrics']['requests']:,} | "
+        f"{reasoning['reasoning_metrics']['tokens']:,} | "
+        f"${reasoning['reasoning_metrics']['cost_per_m_tokens']:.3f} | "
+        f"{reasoning['reasoning_metrics']['energy_wh_per_m_tokens']:,.1f} |",
+        f"| Standard | {reasoning['standard_metrics']['requests']:,} | "
+        f"{reasoning['standard_metrics']['tokens']:,} | "
+        f"${reasoning['standard_metrics']['cost_per_m_tokens']:.3f} | "
+        f"{reasoning['standard_metrics']['energy_wh_per_m_tokens']:,.1f} |",
+        "",
+        f"At a 5% cap, the 30-day projection is "
+        f"${reasoning['projected_cost_savings_monthly']:,.2f} and "
+        f"{reasoning['projected_energy_savings_kwh_monthly']:,.1f} kWh saved.",
+        "",
+        "## Extension: carbon-aware scheduling",
+        "",
+        f"The interruptible pool uses {carbon['interruptible_energy_kwh']:,.1f} kWh per workload cycle. "
+        f"Moving it from {carbon['source_region']} to {carbon['cleanest_region']} saves "
+        f"{carbon['carbon_saved_kg']:,.2f} kgCO2e ({carbon['carbon_reduction_pct']:.1f}%) "
+        "and reduces estimated electricity cost by "
+        f"${abs(carbon['electricity_cost_change']):,.2f}.",
+        "",
+        "| Region | $/kWh | gCO2/kWh | Electricity cost | Carbon (kg) |",
+        "|---|---:|---:|---:|---:|",
+    ]
+    for region, values in carbon["regions"].items():
+        analysis_sections.append(
+            f"| {region} | {values['price_per_kwh']:.3f} | "
+            f"{values['carbon_g_per_kwh']:.0f} | ${values['electricity_cost']:,.2f} | "
+            f"{values['carbon_kg']:,.2f} |"
+        )
+    analysis_sections += [
+        "",
+        "| Interruptible job | GPU | Energy (kWh) | Source carbon (kg) | Cleanest carbon (kg) | Saved (kg) |",
+        "|---|---|---:|---:|---:|---:|",
+    ]
+    for job in carbon["per_job"]:
+        analysis_sections.append(
+            f"| {job['job_id']} | {job['gpu_type']} | {job['energy_kwh']:,.1f} | "
+            f"{job['source_carbon_kg']:,.2f} | {job['cleanest_carbon_kg']:,.2f} | "
+            f"{job['carbon_saved_kg']:,.2f} |"
+        )
+    analysis_sections += [
+        "",
+        f"Use **{carbon['cleanest_region']}** when carbon is the priority, "
+        f"**{carbon['cheapest_region']}** for minimum electricity cost, or "
+        f"**{carbon['balanced_region']}** for the simple cost-carbon balance. Validate data residency, "
+        "capacity, and user latency before moving online inference; the recommendation applies first to "
+        "checkpointable batch/training jobs.",
+    ]
+
+    md = report.build_report(
+        baseline, optimized, levers, sustainability=sust,
+        analysis_sections=analysis_sections,
+    )
     out_md = os.path.join(ROOT, "outputs", "report.md")
     os.makedirs(os.path.dirname(out_md), exist_ok=True)
     with open(out_md, "w") as f:
